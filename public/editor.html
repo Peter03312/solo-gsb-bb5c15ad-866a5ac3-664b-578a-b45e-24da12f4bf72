@@ -76,6 +76,15 @@
         <div class="card">
           <h2>已发布版本</h2>
           <div id="versionList" class="muted">加载中…</div>
+          <h3 style="margin-top:14px">两版对照（只读）</h3>
+          <p class="muted">选择两份已发布年表，查看事件、被选时间主张与「先于」关系的前后变更；不修改历史快照与当前草稿。</p>
+          <div class="row">
+            <div class="field"><label>旧版</label><select id="diffFrom"></select></div>
+            <div class="field"><label>新版</label><select id="diffTo"></select></div>
+            <div style="flex:0 0 auto;padding-bottom:2px">
+              <button class="secondary" id="btnDiff" type="button">对照两版</button>
+            </div>
+          </div>
         </div>
       </section>
     </div>
@@ -109,6 +118,17 @@
     <div class="d-foot">
       <button class="secondary" id="restoreCancel" type="button">取消</button>
       <button id="restoreConfirm" type="button">确认用此版本替换整个草稿</button>
+    </div>
+  </dialog>
+
+  <!-- 两版年表对照对话框（只读） -->
+  <dialog id="diffDialog" style="width:min(920px,96vw)">
+    <div class="d-head" style="background:var(--paper);color:var(--accent-dark);border-bottom-color:var(--line)">
+      🔍 两版年表对照（只读，不改历史快照与当前草稿）
+    </div>
+    <div class="d-body" id="diffBody">加载对照…</div>
+    <div class="d-foot">
+      <button class="secondary" id="diffCancel" type="button">关闭</button>
     </div>
   </dialog>
 

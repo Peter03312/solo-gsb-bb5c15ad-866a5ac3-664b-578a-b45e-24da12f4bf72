@@ -94,6 +94,21 @@ CREATE TABLE IF NOT EXISTS version_relations (
   sort_order   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_vr_version ON version_relations(version_id);
+
+-- 事件身份谱系：从某已发布版本恢复草稿时，每个重建事件记一行
+-- 「恢复后的新草稿事件 id → 被恢复快照中的旧草稿事件 id」。
+-- 恢复后即使数据库分配了全新事件 id，再次发布的版本仍可凭此链延续身份。
+-- 只追加、不更新不删除；不加外键约束——草稿事件事后被删除时，
+-- 历史版本之间的身份证明仍须保留。
+CREATE TABLE IF NOT EXISTS event_lineage (
+  id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+  draft_event_id            INTEGER NOT NULL,   -- 恢复后新草稿事件 id
+  ancestor_event_id         INTEGER NOT NULL,   -- 被恢复快照内的旧草稿事件 id
+  restored_from_version_no  INTEGER NOT NULL,   -- 从第几版恢复（溯源用）
+  created_at                TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_lineage_draft ON event_lineage(draft_event_id);
+CREATE INDEX IF NOT EXISTS idx_lineage_ancestor ON event_lineage(ancestor_event_id);
 `;
 
 let db;

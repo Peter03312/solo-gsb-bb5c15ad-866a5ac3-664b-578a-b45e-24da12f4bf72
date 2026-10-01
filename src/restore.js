@@ -18,6 +18,7 @@ const { getDb } = require('./db');
 const { latestVersionNo, getVersionDetail } = require('./publish');
 const { ordinalFromIso, ymdFromOrdinal } = require('./dates');
 const { getDraftRevision, bumpDraftRevision, readDraftState } = require('./draft');
+const { rootEventId } = require('./lineage');
 
 function httpError(status, body) {
   throw Object.assign({ status }, body);
@@ -139,10 +140,19 @@ function confirmRestore({ versionNo, draftRevision, expectedLatestVersionNo }) {
     // 快照只保存当版被选主张，故每个事件只重建一条主张（待编辑台继续校验发布）。
     const eventIdMap = {};
     const claimIdMap = {};
+    const insLineage = db.prepare(`
+      INSERT INTO event_lineage (draft_event_id, ancestor_event_id, restored_from_version_no)
+      VALUES (?, ?, ?)
+    `);
     for (const se of snapEvents) {
       const info = insEvent.run(se.title, se.description);
       const newEventId = info.lastInsertRowid;
       eventIdMap[se.event_id] = newEventId;
+
+      // 身份延续：新草稿事件继承被恢复事件的身份（即使数据库分配了新 id）。
+      // ancestor 记快照事件的“身份根”（它自身可能由更早一次恢复而来），
+      // 使多次恢复后仍可沿链追溯到同一身份。
+      insLineage.run(newEventId, rootEventId(db, se.event_id), versionNo);
 
       const { year, month, day } = ymdFromOrdinal(ordinalFromIso(se.interval_start));
       const c = insClaim.run(

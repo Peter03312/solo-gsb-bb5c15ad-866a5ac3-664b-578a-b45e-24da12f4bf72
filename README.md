@@ -117,6 +117,23 @@ PORT=8080 EDITOR_TOKEN=my-secret npm start
 
 草稿区每一次增删改（事件 / 主张 / 关系，以及恢复本身）都会把**草稿修订号** +1；`GET /api/editor/state` 与恢复接口都会返回 `draftRevision`。**历史快照与访客年表在恢复过程中保持不变**。
 
+### 两份已发布年表对照（只读）
+
+在编辑台右下「已发布版本 → 两版对照」中选择旧版与新版，点「对照两版」：
+
+1. **身份配对（不按标题相似度猜测）**：
+   - 两版中的事件**草稿 id 相同** → 自动配对（`same_id`）；
+   - 事件若曾**从某版恢复草稿**、数据库分配了新 id 后再次发布，系统按恢复时记录的**身份谱系**（`event_lineage`）把新旧事件判为同一身份（`restore_lineage`，多次恢复、跨多版仍可沿链证明）；
+   - 谱系无法唯一证明的（例如两批完全独立的录入）→ 两版分别列为**未配对**，不会因标题相同而擅自配对。
+2. **人工一对一配对（仅本次对照有效）**：对话框可从两侧未配对事件中逐对指定配对；提交时**重复（同一事件出现多次）、跨版不存在、与已有确定配对冲突**都会被**整组拒绝**并逐项列出原因，不保存、不猜测。
+3. **逐项前后值**：每对事件展示标题、描述、主张日期精度、日期、区间起止、出处、考异备注、求解日期的旧版值 / 新版值与是否变化。
+4. **「先于」关系**：先按事件配对把两端映射到同一身份后再比较——
+   - 同端点对两侧各恰好一条：比较**出处、备注**，列为新增 / 移除 / 修改 / 无变化；
+   - **同端点多条关系、无法唯一对应时只列增删，不推断修改**；
+   - 端点事件未配对的关系，随未配对事件列入新增 / 移除。
+
+对照是**纯只读**操作：不写历史快照、不写当前草稿、不推进草稿修订号；人工配对不持久化。未知版本返回 404 `VERSION_NOT_FOUND`，既有版本查询接口的响应结构保持不变。
+
 ### 两名编辑者并发修改（版本冲突）
 
 发布请求必须带 `baseVersionNo`（编辑台打开时自动记录当前最新版本号）。若两名编辑者都从第 N 版开始改，第一人发布产生第 N+1 版后，第二人仍以 `baseVersionNo=N` 提交时：
@@ -134,23 +151,26 @@ PORT=8080 EDITOR_TOKEN=my-secret npm start
 - 单文件 SQLite 数据库：容器中位于 `/app/data/chronicle.db`（Docker 卷 `chronicle-data`），本机直跑位于 `./data/chronicle.db`。
 - 备份：停止写入后复制该 `.db` 文件即可（或使用 SQLite 的 `.backup` 命令）。
 - 历史版本表 `versions / version_events / version_relations` 只追加、不更新不删除，保证不可变。
+- 身份谱系表 `event_lineage` 同样只追加：每次从版本恢复草稿时记录「新草稿事件 id → 被恢复事件的身份根」，供版本对照在新 id 下延续事件身份；不设外键级联，草稿事件事后删除也不影响历史版本间的身份证明。
 
 ## 目录结构
 
 ```
 src/
   server.js     Express 入口、口令中间件、静态界面
-  routes.js     公开只读 API 与编辑者草稿/发布/恢复 API
-  db.js         SQLite 连接与建表（草稿区 + 版本快照区 + 草稿修订号）
+  routes.js     公开只读 API 与编辑者草稿/发布/恢复/版本对照 API
+  db.js         SQLite 连接与建表（草稿区 + 版本快照区 + 草稿修订号 + 事件身份谱系）
   dates.js      年/月/日精度 → 覆盖区间（公历序数日）
   solver.js     Tarjan 环检测 + 拓扑下界传播求严格先后可行解
   suggest.js    时间无解时的只读改选建议：分支限界求最少改选组合 + 平手字典序
   publish.js    发布事务：再校验 + 版本冲突检查 + 写不可变快照
   draft.js      草稿全貌组装、草稿修订号与草稿变更事务
-  restore.js    恢复事务：预览只读 + 乐观并发校验 + 按快照原子重建草稿
+  restore.js    恢复事务：预览只读 + 乐观并发校验 + 按快照原子重建草稿 + 写身份谱系
+  lineage.js    身份谱系读取 / 求根（对照判定 restore_lineage 配对）
+  diff.js       两版对照（只读）：身份配对 + 逐项前后值 + 关系增删改
   seed.js       演示数据
 public/         访客页与编辑台（原生 HTML/CSS/JS）
-test/           node:test 单元与端到端测试（含成环、无解、409 冲突、恢复）
+test/           node:test 单元与端到端测试（含成环、无解、409 冲突、恢复、版本对照）
 ```
 
 ## 主要 HTTP API
@@ -180,7 +200,14 @@ test/           node:test 单元与端到端测试（含成环、无解、409 �
   - `POST /api/editor/restore/confirm` — 体含 `versionNo`、`draftRevision`、`expectedLatestVersionNo`（取预览返回值）；原子替换整个草稿，返回 `{restoredFromVersionNo, idMap:{events,claims,relations}, state}`（`state` 即新草稿全貌，含待选主张）
     - 409：`{code:"RESTORE_CONFLICT", message, previewDraftRevision, currentDraftRevision, expectedLatestVersionNo, currentVersionNo}`
     - 404：`{code:"VERSION_NOT_FOUND"}`
-- 所有草稿增删改接口（含恢复确认）都会推进 `GET /api/editor/state` 返回的 `draftRevision`；预览、发布与改选建议不推进。
+- 两版年表对照（只读）：`POST /api/editor/versions/diff` — 体含 `fromVersionNo`、`toVersionNo`（均为正整数版本号，可相同）与可选 `manualPairs:[{fromEventId,toEventId}]`（仅本次对照有效）；不推进修订号、不写任何数据
+  - 200：`{code:"VERSION_DIFF", readOnly, from,to, pairing:{autoPairCount, manualPairCount, pairs:[{fromEventId,toEventId,matchKind,fromTitle,toTitle}], unpairedFrom, unpairedTo}, eventDiffs:[{fromEventId,toEventId,matchKind,fromTitle,toTitle,changed, fields:[{field,from,to,changed}]}], relations:{unchanged,changed,added,removed}}`
+    - `matchKind`：`same_id`（草稿 id 相同）/ `restore_lineage`（恢复谱系证明同身份）/ `manual`（本次人工配对）
+    - 事件字段 `field` 依次为 `title, description, precision, dateLabel, intervalStart, intervalEnd, source, claimNote, resolvedDate`
+    - 关系条目：配对后两端 `earlier/later:{fromEventId,toEventId,fromTitle,toTitle}`；`changed/unchanged` 带 `fields:[{field:source|note,from,to,changed}]`；`added/removed` 带 `reason`（`absent_in_from | absent_in_to | endpoint_unpaired | ambiguous_endpoint_group`）与关系在两版中的 id
+  - 400：`{code:"PAIR_INVALID", invalidPairs:[{fromEventId,toEventId,reason}]}`，`reason`：`invalid_pair | duplicated_from | duplicated_to | duplicated_pair | from_event_not_found | to_event_not_found | conflict_with_pair`（冲突项另带 `existingFromEventId/existingToEventId`）
+  - 400：`{code:"VERSION_NO_INVALID"}`（版本号非正整数）；404：`{code:"VERSION_NOT_FOUND", versionNo}`（任一版本未知）
+- 所有草稿增删改接口（含恢复确认）都会推进 `GET /api/editor/state` 返回的 `draftRevision`；预览、发布、改选建议与版本对照不推进。
 
 ## 改选建议 HTTP 调用示例
 
@@ -209,10 +236,46 @@ curl -s -X POST "$BASE/api/editor/suggest-reselection" \
 
 建议只描述「把哪些事件改选到哪条现有主张」即可解，不代替发布：确认采纳后用建议的 `selection` 重新调用 `/api/editor/validate` 与 `/api/editor/publish`（仍须遵守 `baseVersionNo` 冲突约定）。
 
-## 本轮变动（改选建议）
+## 两版对照 HTTP 调用示例
 
-- 新增只读接口 `POST /api/editor/suggest-reselection` 与求解模块 `src/suggest.js`（分支限界：最少改选事件数，平手按事件 ID 排序的主张 ID 全序列取字典序最小，求解日期由既有 `solver.js` 复核产出）。
-- `POST /api/editor/validate` 响应新增 `draftRevision` 字段（其余结构不变）。
-- 编辑台预检出现「时间无解」时可一键查看 / 应用改选建议（应用只写本机浏览器选择）。
-- 新增测试：`test/suggest.test.js`（HTTP 全分支）、`test/suggest-search.test.js`（最优性与平手规则）。
-- 启动方式、既有接口与数据结构均无破坏性变化，旧库可直接启动。
+编辑台已内置（「已发布版本 → 两版对照」）。直接调用 API：
+
+```bash
+TOKEN=editor            # 与 EDITOR_TOKEN 一致
+BASE=http://localhost:3000
+
+# 1) 对照第 1 版与第 2 版（自动按草稿 id / 恢复谱系配对）
+curl -s -X POST "$BASE/api/editor/versions/diff" \
+  -H "Content-Type: application/json" -H "X-Editor-Token: $TOKEN" \
+  -d '{"fromVersionNo":1,"toVersionNo":2}'
+# -> {"ok":true,"code":"VERSION_DIFF","readOnly":true,
+#     "pairing":{"autoPairCount":2,"manualPairCount":0,
+#       "pairs":[{"fromEventId":1,"toEventId":3,"matchKind":"restore_lineage",...}],
+#       "unpairedFrom":[],"unpairedTo":[{"eventId":5,"title":"抽水机到站"}]},
+#     "eventDiffs":[{"fromEventId":1,"toEventId":3,"changed":true,
+#       "fields":[{"field":"precision","from":"year","to":"day","changed":true}, ...]}],
+#     "relations":{"unchanged":[...],"changed":[],"added":[...],"removed":[]}}
+
+# 2) 谱系无法证明身份的事件，为本次对照指定一对一人工配对（不保存）
+curl -s -X POST "$BASE/api/editor/versions/diff" \
+  -H "Content-Type: application/json" -H "X-Editor-Token: $TOKEN" \
+  -d '{"fromVersionNo":1,"toVersionNo":2,
+       "manualPairs":[{"fromEventId":1,"toEventId":7},{"fromEventId":2,"toEventId":8}]}'
+# 重复 / 跨版不存在 / 与自动确定配对冲突 → 400 PAIR_INVALID，逐项列原因：
+# {"code":"PAIR_INVALID","invalidPairs":[{"fromEventId":1,"toEventId":8,
+#   "reason":"conflict_with_pair","existingFromEventId":2,"existingToEventId":7}]}
+
+# 3) 未知版本明确报错
+curl -s -X POST "$BASE/api/editor/versions/diff" \
+  -H "Content-Type: application/json" -H "X-Editor-Token: $TOKEN" \
+  -d '{"fromVersionNo":1,"toVersionNo":99}'
+# -> 404 {"code":"VERSION_NOT_FOUND","versionNo":99}
+```
+
+## 本轮变动（两版年表对照）
+
+- 新增只读接口 `POST /api/editor/versions/diff` 与对照模块 `src/diff.js`：按「草稿 id → 恢复谱系」判定事件身份，逐项给出事件标题 / 描述 / 主张精度 / 日期 / 区间 / 出处 / 考异 / 求解日期前后值；关系按配对后端点比较新增、移除、修改（出处、备注），同端点多条无法唯一对应时只列增删；支持仅本次有效的一对一人工配对并逐项拒绝非法配对，绝不按标题相似度猜测。
+- 新增只追加表 `event_lineage` 与 `src/lineage.js`：恢复事务（`src/restore.js`）在按快照重建草稿时记录「新草稿事件 id → 被恢复事件身份根」，使恢复后再次发布的事件即使拿到新数据库 id，仍可在旧版本对照中延续身份（支持多次恢复、跨版追溯）。
+- 编辑台「已发布版本」卡片新增两版选择与对照对话框（事件前后值表、未配对事件、人工配对表单、关系增删改分区）。
+- 新增测试 `test/diff.test.js`（自动 / 谱系 / 多跳谱系配对、人工配对全部分支、关系修改与歧义增删、未配对端点、404/400/401、只读语义）。
+- 对照不写任何数据、不推进草稿修订号，历史快照与当前草稿不变；未知版本明确 404；既有接口与响应结构无破坏性变化，新增表自动创建，旧库可直接启动。

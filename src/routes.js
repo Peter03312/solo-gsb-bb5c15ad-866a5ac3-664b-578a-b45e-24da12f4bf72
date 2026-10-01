@@ -13,6 +13,7 @@ const {
 } = require('./draft');
 const { previewRestore, confirmRestore } = require('./restore');
 const { suggestReselection } = require('./suggest');
+const { compareVersions } = require('./diff');
 
 const router = express.Router();
 
@@ -292,6 +293,19 @@ router.get('/api/editor/versions', (req, res) => {
     )
     .all();
   res.json({ currentVersionNo: no, versions: rows });
+});
+
+// ---- 两份已发布年表对照（只读，不改快照 / 草稿 / 修订号） ----
+// 体含 fromVersionNo、toVersionNo，以及仅本次对照有效的 manualPairs。
+// 未知版本 → 404 VERSION_NOT_FOUND；人工配对非法 → 400 PAIR_INVALID（逐项列原因）。
+router.post('/api/editor/versions/diff', (req, res) => {
+  const body = req.body || {};
+  const result = compareVersions({
+    fromVersionNo: Number(body.fromVersionNo),
+    toVersionNo: Number(body.toVersionNo),
+    manualPairs: body.manualPairs == null ? [] : body.manualPairs,
+  });
+  res.json(result);
 });
 
 // ---- 从任一已发布版本预览恢复（只读，不改任何数据） ----

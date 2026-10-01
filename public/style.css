@@ -166,3 +166,21 @@ dialog .d-foot { padding: 12px 18px; text-align: right; border-top: 1px solid va
 .suggest-table th, .suggest-table td { border: 1px solid var(--line); padding: 6px 9px; text-align: left; vertical-align: top; }
 .suggest-table th { background: #faf6ee; color: var(--accent-dark); }
 .suggest-table tr.suggest-change td { background: var(--warn-bg); }
+
+/* ---------- 两版对照 ---------- */
+.diff-event { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: var(--card); }
+.diff-event.is-changed { border-left: 4px solid var(--warn); }
+.diff-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+.diff-table th, .diff-table td { border: 1px solid var(--line); padding: 5px 8px; text-align: left; vertical-align: top; }
+.diff-table th { background: #faf6ee; color: var(--accent-dark); }
+.diff-table tr.diff-same td { color: var(--muted); }
+.diff-table tr.diff-changed td.diff-from { background: var(--danger-bg); }
+.diff-table tr.diff-changed td.diff-to { background: var(--ok-bg); }
+.diff-from { color: var(--danger); }
+.diff-to { color: var(--ok); }
+.badge.diff-manual { border-color: var(--warn); color: var(--warn); background: var(--warn-bg); }
+#diffDialog h4 { margin: 12px 0 6px; font-size: 14px; }
+li.diff-from { border-left: 3px solid var(--danger); padding-left: 8px; margin: 6px 0; }
+li.diff-to { border-left: 3px solid var(--ok); padding-left: 8px; margin: 6px 0; }
+#diffDialog details summary { cursor: pointer; }
+#diffDialog .d-body { max-height: 72vh; overflow-y: auto; }
