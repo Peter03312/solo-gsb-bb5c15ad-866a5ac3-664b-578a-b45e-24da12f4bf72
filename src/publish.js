@@ -7,7 +7,7 @@ const { isoFromOrdinal } = require('./dates');
 // 组装草稿现状并求解；不写库。
 function evaluateDraft(selectionList) {
   const db = getDb();
-  const events = db.prepare('SELECT id, title, description FROM events ORDER BY id').all();
+  const events = db.prepare('SELECT id, title, description, identity FROM events ORDER BY id').all();
   const claims = db.prepare('SELECT * FROM claims').all();
   const relations = db
     .prepare('SELECT id, earlier_id AS earlierId, later_id AS laterId, source, note FROM relations ORDER BY id')
@@ -94,9 +94,9 @@ function publishVersion({ selectionList, baseVersionNo, editor, note }) {
 
     const insEvent = db.prepare(`
       INSERT INTO version_events
-        (version_id, event_id, title, description, claim_id, precision, date_label,
+        (version_id, event_id, identity, title, description, claim_id, precision, date_label,
          interval_start, interval_end, resolved_date, source, claim_note, sort_order)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     // 年表按求解出的具体日排序；同日按标题，保持稳定
@@ -115,6 +115,7 @@ function publishVersion({ selectionList, baseVersionNo, editor, note }) {
       insEvent.run(
         versionId,
         ev.id,
+        ev.identity,
         ev.title,
         ev.description,
         claimRow.id,

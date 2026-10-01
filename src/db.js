@@ -11,11 +11,19 @@ PRAGMA foreign_keys = ON;
 -- ============ 草稿区（编辑者可随时修改） ============
 CREATE TABLE IF NOT EXISTS events (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  identity    TEXT,                          -- 跨版本稳定身份；新建为 'e'||id，从快照恢复时继承
   title       TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+-- 未显式指定 identity 的插入（普通新建）自动取 'e'||id；恢复事务会显式写入继承身份
+CREATE TRIGGER IF NOT EXISTS trg_events_identity_default
+AFTER INSERT ON events
+WHEN NEW.identity IS NULL
+BEGIN
+  UPDATE events SET identity = 'e' || NEW.id WHERE id = NEW.id;
+END;
 
 -- 同一事件可保留多条互相矛盾的时间主张；发布时只选一条
 CREATE TABLE IF NOT EXISTS claims (
@@ -69,6 +77,7 @@ CREATE TABLE IF NOT EXISTS version_events (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   version_id        INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
   event_id          INTEGER NOT NULL,       -- 草稿事件 id（版本内不可变，仅作溯源）
+  identity          TEXT,                   -- 发布时事件的跨版本稳定身份（版本对照配对依据）
   title             TEXT NOT NULL,
   description       TEXT NOT NULL DEFAULT '',
   claim_id          INTEGER NOT NULL,
@@ -98,6 +107,23 @@ CREATE INDEX IF NOT EXISTS idx_vr_version ON version_relations(version_id);
 
 let db;
 
+// 旧库迁移：本轮新增 events.identity / version_events.identity。
+// 新建库由 SCHEMA 直接建出；旧库启动时补列并回填：
+//   - 草稿事件：identity = 'e'||id（与触发器的默认规则一致）；
+//   - 历史快照事件：先取 identity 列，列不存在/为空时回退 'e'||event_id。
+function migrate(database) {
+  const cols = (table) =>
+    new Set(database.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+  if (!cols('events').has('identity')) {
+    database.exec(`ALTER TABLE events ADD COLUMN identity TEXT`);
+    database.exec(`UPDATE events SET identity = 'e' || id WHERE identity IS NULL`);
+  }
+  if (!cols('version_events').has('identity')) {
+    database.exec(`ALTER TABLE version_events ADD COLUMN identity TEXT`);
+    database.exec(`UPDATE version_events SET identity = 'e' || event_id WHERE identity IS NULL`);
+  }
+}
+
 function getDb() {
   if (db) return db;
   const dbPath = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'chronicle.db');
@@ -106,6 +132,7 @@ function getDb() {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+  migrate(db); // 旧库补列回填（新库列已由 SCHEMA 建出，迁移为空操作）
   return db;
 }
 

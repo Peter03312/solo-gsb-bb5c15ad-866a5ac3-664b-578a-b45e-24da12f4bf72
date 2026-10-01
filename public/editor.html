@@ -77,6 +77,21 @@
           <h2>已发布版本</h2>
           <div id="versionList" class="muted">加载中…</div>
         </div>
+
+        <div class="card">
+          <h2>两版对照（只读）</h2>
+          <p class="muted">
+            选择两个已发布版本，按事件的跨版本身份自动配对（同一草稿 ID、或从已发布版恢复草稿后再发布的事件，即使数据库换了新 ID 也视为同一事件）；
+            身份无法证明的事件先列为未配对，可在对话框中指定一对一人工配对。<b>不按标题相似度猜测</b>，对照不改任何草稿或快照。
+          </p>
+          <div class="row">
+            <div class="field"><label>前版（from）</label><select id="cmpFrom"></select></div>
+            <div class="field"><label>后版（to）</label><select id="cmpTo"></select></div>
+            <div style="flex:0 0 auto;padding-bottom:4px">
+              <button id="btnCompare" type="button" class="secondary">查看两版变更</button>
+            </div>
+          </div>
+        </div>
       </section>
     </div>
   </main>
@@ -109,6 +124,18 @@
     <div class="d-foot">
       <button class="secondary" id="restoreCancel" type="button">取消</button>
       <button id="restoreConfirm" type="button">确认用此版本替换整个草稿</button>
+    </div>
+  </dialog>
+
+  <!-- 两版对照对话框（只读） -->
+  <dialog id="compareDialog" style="width:min(940px,96vw);max-width:none">
+    <div class="d-head" style="background:var(--paper);color:var(--accent-dark);border-bottom-color:var(--line)">
+      🔍 两版对照（只读，不改草稿与历史快照）
+    </div>
+    <div class="d-body" id="compareBody" style="max-height:74vh;overflow:auto">加载对照…</div>
+    <div class="d-foot">
+      <button class="secondary" id="compareClearManual" type="button">清除人工配对</button>
+      <button id="compareCancel" type="button">关闭</button>
     </div>
   </dialog>
 

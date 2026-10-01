@@ -126,7 +126,7 @@ function confirmRestore({ versionNo, draftRevision, expectedLatestVersionNo }) {
     db.prepare('DELETE FROM claims').run();
     db.prepare('DELETE FROM events').run();
 
-    const insEvent = db.prepare('INSERT INTO events (title, description) VALUES (?, ?)');
+    const insEvent = db.prepare('INSERT INTO events (identity, title, description) VALUES (?, ?, ?)');
     const insClaim = db.prepare(`
       INSERT INTO claims
         (event_id, precision, year, month, day, date_label, interval_start, interval_end, source, note)
@@ -140,7 +140,9 @@ function confirmRestore({ versionNo, draftRevision, expectedLatestVersionNo }) {
     const eventIdMap = {};
     const claimIdMap = {};
     for (const se of snapEvents) {
-      const info = insEvent.run(se.title, se.description);
+      // 恢复的事件延续被恢复事件的跨版本身份；旧快照无 identity 时回退其 event_id
+      const identity = se.identity || `e${se.event_id}`;
+      const info = insEvent.run(identity, se.title, se.description);
       const newEventId = info.lastInsertRowid;
       eventIdMap[se.event_id] = newEventId;
 

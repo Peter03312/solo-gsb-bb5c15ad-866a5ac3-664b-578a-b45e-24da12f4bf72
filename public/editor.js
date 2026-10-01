@@ -207,6 +207,298 @@ async function loadVersions() {
           </div>
         </div>`).join('')
     : '尚无版本。';
+  renderCompareSelects(data.versions);
+}
+
+// ---------- 两版对照 ----------
+let manualPairs = []; // 本次对照人工配对 [{fromEventId,toEventId}]（仅前端状态，不写服务器）
+let lastCompareData = null; // 最近一次成功对照（出错时回退渲染，保留配对控件）
+
+function renderCompareSelects(versions) {
+  const opts = versions.length
+    ? versions.map((v) => `<option value="${v.versionNo}">第 ${v.versionNo} 版 · ${esc(v.editor || '匿名')}</option>`).join('')
+    : '<option value="">（尚无已发布版本）</option>';
+  $('#cmpFrom').innerHTML = opts;
+  $('#cmpTo').innerHTML = opts;
+  // 默认取相邻两版：前版为倒数第二版、后版为最新版
+  if (versions.length >= 2) {
+    $('#cmpFrom').value = String(versions[1].versionNo);
+    $('#cmpTo').value = String(versions[0].versionNo);
+  }
+}
+
+const PREC_CODE_LABEL = { year: '精确到年', month: '精确到月', day: '精确到日' };
+const DIFF_FIELD_LABEL = {
+  title: '标题',
+  description: '描述',
+  precision: '主张日期精度',
+  dateLabel: '主张日期',
+  intervalStart: '区间起点',
+  intervalEnd: '区间终点',
+  source: '出处',
+  claimNote: '考异备注',
+  resolvedDate: '求解日期',
+};
+const REL_FIELD_LABEL = { source: '出处', note: '备注' };
+
+function sameVal(a, b) { return a === b; }
+function valCell(v, changed) {
+  const text = v === '' || v === null || v === undefined ? '（空）' : v;
+  return changed ? `<td class="diff-changed">${esc(text)}</td>` : `<td>${esc(text)}</td>`;
+}
+
+// 逐项事件前后值表（标题、描述、主张日期精度、区间、出处、考异、求解日期）
+function eventFieldTable(fromView, toView, changedFields) {
+  const ch = new Set(changedFields);
+  const claimRow = (label, key, from, to) =>
+    `<tr><td class="diff-label">${label}</td>${valCell(from, ch.has(key))}${valCell(to, ch.has(key))}</tr>`;
+  return `
+    <table class="cmp-table">
+      <thead><tr><th style="width:120px">字段</th><th>前版 #${fromView.versionNo}</th><th>后版 #${toView.versionNo}</th></tr></thead>
+      <tbody>
+        ${claimRow('标题', 'title', fromView.title, toView.title)}
+        ${claimRow('描述', 'description', fromView.description, toView.description)}
+        ${claimRow('主张日期精度', 'precision', PREC_CODE_LABEL[fromView.claim.precision] || fromView.claim.precision, PREC_CODE_LABEL[toView.claim.precision] || toView.claim.precision)}
+        ${claimRow('主张日期', 'dateLabel', fromView.claim.dateLabel, toView.claim.dateLabel)}
+        ${claimRow('区间起点', 'intervalStart', fromView.claim.intervalStart, toView.claim.intervalStart)}
+        ${claimRow('区间终点', 'intervalEnd', fromView.claim.intervalEnd, toView.claim.intervalEnd)}
+        ${claimRow('出处', 'source', fromView.claim.source, toView.claim.source)}
+        ${claimRow('考异备注', 'claimNote', fromView.claim.claimNote, toView.claim.claimNote)}
+        ${claimRow('求解日期', 'resolvedDate', fromView.claim.resolvedDate, toView.claim.resolvedDate)}
+      </tbody>
+    </table>`;
+}
+
+function eventSummaryCard(view, sideTag) {
+  return `
+    <div class="cmp-event">
+      <div><b>${esc(view.title)}</b>
+        <span class="badge">${sideTag} #${view.versionNo} 事件 ${view.eventId}</span>
+        <span class="badge">身份 ${esc(view.identity)}</span>
+      </div>
+      <div class="muted">${esc(view.claim.dateLabel)} · ${PREC_CODE_LABEL[view.claim.precision] || view.claim.precision}
+        · 区间 ${view.claim.intervalStart} ~ ${view.claim.intervalEnd} · 求解日期 ${view.claim.resolvedDate}</div>
+      ${view.claim.source ? `<div class="source"><b>出处：</b>${esc(view.claim.source)}</div>` : ''}
+      ${view.claim.claimNote ? `<div class="muted">${esc(view.claim.claimNote)}</div>` : ''}
+      ${view.description ? `<div class="muted">${esc(view.description)}</div>` : ''}
+    </div>`;
+}
+
+function relLineHtml(r, tag) {
+  return `
+    <div class="rel-line">
+      <strong>${esc(r.earlierTitle)}</strong> <span class="badge">先于</span> <strong>${esc(r.laterTitle)}</strong>
+      <span class="muted">（${tag}：关系 ${r.relationId}）</span>
+      <div class="source"><b>出处：</b>${esc(r.source || '（空）')}</div>
+      <div class="muted"><b>备注：</b>${esc(r.note || '（空）')}</div>
+    </div>`;
+}
+
+function relChangeHtml(item) {
+  const ch = new Set(item.fields);
+  return `
+    <div class="rel-line">
+      <strong>${esc(item.from.earlierTitle)}</strong> <span class="badge">先于</span> <strong>${esc(item.from.laterTitle)}</strong>
+      <table class="cmp-table" style="margin-top:4px">
+        <thead><tr><th style="width:80px">字段</th><th>前版（关系 ${item.from.relationId}）</th><th>后版（关系 ${item.to.relationId}）</th></tr></thead>
+        <tbody>
+          <tr><td class="diff-label">出处</td>${valCell(item.from.source, ch.has('source'))}${valCell(item.to.source, ch.has('source'))}</tr>
+          <tr><td class="diff-label">备注</td>${valCell(item.from.note, ch.has('note'))}${valCell(item.to.note, ch.has('note'))}</tr>
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function renderCompare(d) {
+  const { summary, pairing } = d;
+
+  // ---- 配对事件 ----
+  const pairedHtml = d.pairedEvents.length
+    ? d.pairedEvents.map((p) => {
+        const changed = p.changedFields.length
+          ? `变更字段：${p.changedFields.map((f) => `<span class="badge diff-tag">${esc(DIFF_FIELD_LABEL[f] || f)}</span>`).join(' ')}`
+          : '<span class="badge" style="border-color:#bcd8c2;color:var(--ok)">逐项无变化</span>';
+        const kindTag = p.pairKind === 'manual'
+          ? '<span class="badge" style="background:var(--warn-bg)">人工配对</span>'
+          : '<span class="badge">身份自动配对</span>';
+        return `
+          <div class="card cmp-pair ${p.changedFields.length ? 'has-diff' : ''}">
+            <div class="row" style="align-items:flex-start">
+              <div style="flex:1">${eventSummaryCard(p.from, '前版')}</div>
+              <div style="flex:1">${eventSummaryCard(p.to, '后版')}</div>
+            </div>
+            <div style="margin:6px 0">${kindTag} ${changed}</div>
+            ${p.changedFields.length ? eventFieldTable(p.from, p.to, p.changedFields) : ''}
+          </div>`;
+      }).join('')
+    : '<p class="muted">没有任何已配对事件。</p>';
+
+  // ---- 人工配对区 ----
+  const unpairedFromOpts = d.unpairedFrom.map((e) => `<option value="${e.eventId}">#${e.eventId} ${esc(e.title)}</option>`).join('');
+  const unpairedToOpts = d.unpairedTo.map((e) => `<option value="${e.eventId}">#${e.eventId} ${esc(e.title)}</option>`).join('');
+  const manualRows = pairing.pairs.filter((p) => p.kind === 'manual').map((p) =>
+    `<li>前版事件 ${p.fromEventId} ↔ 后版事件 ${p.toEventId}</li>`).join('');
+  const manualSection = `
+    <div class="card" style="background:#fff">
+      <h3>人工一对一配对（仅本次对照）</h3>
+      <p class="muted">下列事件身份无法证明，未自动配对。选择两端事件后点「加入配对」；
+        重复、跨版不存在或与已有确定（身份）配对冲突的配对会被整体拒绝；系统不按标题相似度猜测。</p>
+      <div class="row">
+        <div class="field"><label>前版未配对事件</label><select id="mpFrom"><option value="">— 选择 —</option>${unpairedFromOpts}</select></div>
+        <div style="padding-bottom:6px">↔</div>
+        <div class="field"><label>后版未配对事件</label><select id="mpTo"><option value="">— 选择 —</option>${unpairedToOpts}</select></div>
+        <div style="flex:0 0 auto"><button class="secondary" id="btnAddManualPair" type="button">加入配对</button></div>
+      </div>
+      <div class="muted" id="manualPairState">
+        已指定人工配对：${manualRows ? `<ul class="error-list" style="cursor:default;text-decoration:none">${manualRows}</ul>` : '（无）'}
+      </div>
+    </div>`;
+
+  // ---- 未配对事件 ----
+  const unpairedHtml = `
+    <div class="grid2" style="gap:10px">
+      <div>
+        <h3>前版未配对事件（${d.unpairedFrom.length}）</h3>
+        ${d.unpairedFrom.length ? d.unpairedFrom.map((e) => eventSummaryCard(e, '前版')).join('') : '<p class="muted">无</p>'}
+      </div>
+      <div>
+        <h3>后版未配对事件（${d.unpairedTo.length}）</h3>
+        ${d.unpairedTo.length ? d.unpairedTo.map((e) => eventSummaryCard(e, '后版')).join('') : '<p class="muted">无</p>'}
+      </div>
+    </div>`;
+
+  // ---- 关系 ----
+  const R = d.relations;
+  const relationsHtml = `
+    <div class="card" style="background:#fff">
+      <h3>新增的「先于」关系（${R.added.length}）</h3>
+      ${R.added.length ? R.added.map((r) => relLineHtml(r, '后版新增')).join('') : '<p class="muted">无</p>'}
+      <h3>移除的「先于」关系（${R.removed.length}）</h3>
+      ${R.removed.length ? R.removed.map((r) => relLineHtml(r, '前版移除')).join('') : '<p class="muted">无</p>'}
+      <h3>修改的关系（两端唯一对应，出处/备注变化；${R.changed.length}）</h3>
+      ${R.changed.length ? R.changed.map(relChangeHtml).join('') : '<p class="muted">无</p>'}
+      <h3>同端点多条、无法唯一对应的关系</h3>
+      ${(R.added.length || R.removed.length)
+        ? `<p class="muted">上方「新增 / 移除」中可能包含同端点多条的关系：同端点存在多条、无法唯一对应时，它们作为整组列增删，未推断逐条修改。</p>`
+        : '<p class="muted">无（所有同端点关系均可唯一对应）</p>'}
+      <h3>端点未配对、无法对照的关系（${R.unpaired.length}）</h3>
+      ${R.unpaired.length ? R.unpaired.map((u) =>
+        `<div class="rel-line">${relLineHtml(u.relation, u.side === 'from' ? '仅前版' : '仅后版')}
+          <div class="muted">端点事件 ${u.unpairedEventId} 在另一版中未配对，故该关系无法逐端比较。</div></div>`).join('')
+        : '<p class="muted">无</p>'}
+      <h3>未变化的关系（${R.unchanged.length}）</h3>
+      <details><summary class="muted">展开查看</summary>
+        ${R.unchanged.length ? R.unchanged.map((u) => relLineHtml(u.from, '两版一致')).join('') : '<p class="muted">无</p>'}
+      </details>
+    </div>`;
+
+  const fv = d.fromVersion;
+  const tv = d.toVersion;
+  $('#compareBody').innerHTML = `
+    <p>对照 <b>前版 #${d.fromVersion.versionNo}</b> → <b>后版 #${d.toVersion.versionNo}</b>
+       （只读：不改草稿，也不改任何历史快照）。</p>
+    <div class="card" style="background:#faf6ee">
+      <b>统计：</b>
+      配对事件 ${summary.eventPairs}（身份自动 ${pairing.autoPairCount}、人工 ${pairing.manualPairCount}），
+      其中逐项有变化 ${summary.pairedChangedEvents}；
+      前版未配对 ${summary.unpairedFromCount}、后版未配对 ${summary.unpairedToCount}；
+      关系新增 ${summary.addedRelations}、移除 ${summary.removedRelations}、
+      修改 ${summary.changedRelations}、未变 ${summary.unchangedRelations}、端点未配对 ${summary.unpairedRelations}。
+    </div>
+    ${manualSection}
+    <div class="card" style="background:#fff"><h3>配对事件：逐项前后值（${d.pairedEvents.length}）</h3>${pairedHtml}</div>
+    <div class="card" style="background:#fff"><h3>未配对事件（分别列出，不按标题猜测）</h3>${unpairedHtml}</div>
+    ${relationsHtml}
+    <div id="compareMsg"></div>`;
+
+  document.getElementById('btnAddManualPair')?.addEventListener('click', addManualPairFromDialog);
+}
+
+async function addManualPairFromDialog() {
+  const f = Number($('#mpFrom').value);
+  const t = Number($('#mpTo').value);
+  if (!f || !t) {
+    showCompareError('请分别选择前版与后版的一个未配对事件。');
+    return;
+  }
+  // 前端只拦截“同一端被本会话已指定的人工配对占用”；与自动配对的冲突由服务器判定
+  if (manualPairs.some((p) => p.fromEventId === f && p.toEventId === t)) {
+    showCompareError('该人工配对已指定过（请勿重复添加同一对）。');
+    return;
+  }
+  if (manualPairs.some((p) => p.fromEventId === f)) {
+    showCompareError(`前版事件 #${f} 已与后版事件 #${manualPairs.find((p) => p.fromEventId === f).toEventId} 配对，必须一对一。`);
+    return;
+  }
+  if (manualPairs.some((p) => p.toEventId === t)) {
+    showCompareError(`后版事件 #${t} 已与前版事件 #${manualPairs.find((p) => p.toEventId === t).fromEventId} 配对，必须一对一。`);
+    return;
+  }
+  manualPairs.push({ fromEventId: f, toEventId: t });
+  const ok = await runCompare(true);
+  if (!ok) manualPairs.pop(); // 服务器拒绝（冲突/不存在）时不留存该配对
+}
+
+function showCompareError(html) {
+  // 错误显示在对照内容顶部；同时清掉底部 #compareMsg 的旧信息
+  const box = document.getElementById('compareMsg');
+  if (box) box.innerHTML = '';
+  const body = $('#compareBody');
+  const banner = document.createElement('div');
+  banner.className = 'alert error';
+  banner.innerHTML = html;
+  body.insertBefore(banner, body.firstChild);
+}
+
+async function runCompare(keepManual) {
+  const fromVersionNo = Number($('#cmpFrom').value);
+  const toVersionNo = Number($('#cmpTo').value);
+  if (!fromVersionNo || !toVersionNo) {
+    showGlobal('error', '需要至少两个已发布版本才能对照。');
+    return false;
+  }
+  if (!keepManual) manualPairs = [];
+  if (!lastCompareData || !keepManual) {
+    $('#compareBody').innerHTML = '正在对照两个已发布版本…';
+  }
+  $('#compareDialog').showModal();
+  try {
+    const data = await api('POST', '/api/editor/compare-versions', {
+      fromVersionNo,
+      toVersionNo,
+      manualPairs,
+    });
+    lastCompareData = data;
+    renderCompare(data);
+    return true;
+  } catch (e) {
+    if (e.message === 'unauthorized') { $('#compareDialog').close(); return false; }
+    const invalid = e.body?.invalidPairs;
+    const detail = invalid
+      ? `<ul class="error-list">${invalid.map((p) =>
+          `<li>第 ${p.index + 1} 项（前版 ${esc(p.fromEventId)} ↔ 后版 ${esc(p.toEventId)}）：${esc(pairReasonText(p.reason))}</li>`).join('')}</ul>`
+      : '';
+    // 出错时保留上一次成功对照（配对控件仍在），仅在顶部显示错误
+    if (lastCompareData) {
+      renderCompare(lastCompareData);
+      showCompareError(`${esc(e.body?.message || e.message)}${detail}`);
+    } else {
+      $('#compareBody').innerHTML = `<div class="alert error">${esc(e.body?.message || e.message)}</div>${detail}`;
+    }
+    return false;
+  }
+}
+
+function pairReasonText(reason) {
+  return ({
+    invalid_pair_format: '格式非法（需正整数事件 id）',
+    from_event_not_found: '前版事件不存在',
+    to_event_not_found: '后版事件不存在',
+    duplicate_pair: '同一对配对重复出现',
+    duplicate_from_event: '前版事件被多次配对（必须一对一）',
+    duplicate_to_event: '后版事件被多次配对（必须一对一）',
+    conflicts_with_identity_pairing: '与已有确定的身份配对冲突',
+  })[reason] || reason;
 }
 
 // ---------- 发布 ----------
@@ -533,6 +825,10 @@ async function onClick(e) {
   if (t.id === 'restoreConfirm') { await doRestoreConfirm(); return; }
   const restorePreviewNo = t.dataset && t.dataset.restorePreview;
   if (restorePreviewNo !== undefined) { await openRestorePreview(Number(restorePreviewNo)); return; }
+
+  if (t.id === 'btnCompare') { await runCompare(false); return; }
+  if (t.id === 'compareCancel') { $('#compareDialog').close(); return; }
+  if (t.id === 'compareClearManual') { manualPairs = []; await runCompare(true); return; }
 
   const addEvent = t.dataset && t.dataset.addEvent !== undefined;
   if (t.id === 'btnAddEvent') {

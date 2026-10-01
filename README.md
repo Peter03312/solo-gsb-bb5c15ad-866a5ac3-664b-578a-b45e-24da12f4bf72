@@ -117,6 +117,16 @@ PORT=8080 EDITOR_TOKEN=my-secret npm start
 
 草稿区每一次增删改（事件 / 主张 / 关系，以及恢复本身）都会把**草稿修订号** +1；`GET /api/editor/state` 与恢复接口都会返回 `draftRevision`。**历史快照与访客年表在恢复过程中保持不变**。
 
+### 两个已发布版本的「两版对照」（只读）
+
+在编辑台右下「两版对照」选择任意两个已发布版本（前版 from、后版 to）即可查看变更。对照**只读**：不写草稿、不写任何历史快照、不推进草稿修订号。
+
+1. **事件如何配对（跨版本身份）**：每个事件带有一个跨版本稳定身份——普通新建为 `e<草稿事件id>`；**从已发布版恢复草稿后再次发布的事件延续被恢复事件的身份**，即使数据库为其分配了新的草稿 id 与快照行 id。同一身份在两版中各恰出现一次即**自动配对**；身份无法证明一一对应的（某一侧缺失、或同身份出现多条）事件分别列入「前版未配对 / 后版未配对」，系统**绝不按标题相似度猜测**（标题完全相同也不会自动配对）。
+2. **人工一对一配对**：编辑者可在对话框中为本次对照显式指定未配对事件的配对（`manualPairs`，仅本次请求生效、不落库）。下列情况会被**整体拒绝**（400 `PAIR_INVALID`，逐项给出原因）：重复配对（同一对重复、同一前版 / 后版事件被配多次）、事件在对应版本中不存在、或占用了已有确定（身份自动）配对中的端点；与自动配对一致的人工配对视为冗余但合法。
+3. **逐项前后值**：每个配对事件并排展示**标题、描述、主张日期精度、主张日期、覆盖区间、出处、考异备注、求解日期**的前版 / 后版值，高亮发生变化的字段。
+4. **「先于」关系对照**：只比较两端事件都已配对的关系，以配对后的两端为键比较：后版独有的列为**新增**、前版独有的列为**移除**、两端每侧恰一条且可唯一对应时列出**出处 / 备注的修改**；**同一对端点在一版中存在多条关系、无法唯一对应时，只按整组列增删，绝不推断逐条修改**。任一端点事件未配对的关系无法逐端比较，单列「端点未配对」组并标明未配对端点。
+5. 未知版本号明确返回 404 `VERSION_NOT_FOUND`；既有版本查询接口（含公开快照 JSON 的字段）保持完全兼容。
+
 ### 两名编辑者并发修改（版本冲突）
 
 发布请求必须带 `baseVersionNo`（编辑台打开时自动记录当前最新版本号）。若两名编辑者都从第 N 版开始改，第一人发布产生第 N+1 版后，第二人仍以 `baseVersionNo=N` 提交时：
@@ -145,9 +155,10 @@ src/
   dates.js      年/月/日精度 → 覆盖区间（公历序数日）
   solver.js     Tarjan 环检测 + 拓扑下界传播求严格先后可行解
   suggest.js    时间无解时的只读改选建议：分支限界求最少改选组合 + 平手字典序
-  publish.js    发布事务：再校验 + 版本冲突检查 + 写不可变快照
+  publish.js    发布事务：再校验 + 版本冲突检查 + 写不可变快照（含跨版本事件身份）
   draft.js      草稿全貌组装、草稿修订号与草稿变更事务
-  restore.js    恢复事务：预览只读 + 乐观并发校验 + 按快照原子重建草稿
+  restore.js    恢复事务：预览只读 + 乐观并发校验 + 按快照原子重建草稿（继承事件身份）
+  compare.js    两版对照（只读）：身份自动配对 + 人工一对一配对校验 + 事件逐项前后值 + 关系增删改
   seed.js       演示数据
 public/         访客页与编辑台（原生 HTML/CSS/JS）
 test/           node:test 单元与端到端测试（含成环、无解、409 冲突、恢复）
@@ -180,7 +191,14 @@ test/           node:test 单元与端到端测试（含成环、无解、409 �
   - `POST /api/editor/restore/confirm` — 体含 `versionNo`、`draftRevision`、`expectedLatestVersionNo`（取预览返回值）；原子替换整个草稿，返回 `{restoredFromVersionNo, idMap:{events,claims,relations}, state}`（`state` 即新草稿全貌，含待选主张）
     - 409：`{code:"RESTORE_CONFLICT", message, previewDraftRevision, currentDraftRevision, expectedLatestVersionNo, currentVersionNo}`
     - 404：`{code:"VERSION_NOT_FOUND"}`
-- 所有草稿增删改接口（含恢复确认）都会推进 `GET /api/editor/state` 返回的 `draftRevision`；预览、发布与改选建议不推进。
+- 两版对照（只读）：
+  - `POST /api/editor/compare-versions` — 体含 `fromVersionNo`、`toVersionNo`（正整数版本号；from 为“前”、to 为“后”），可选 `manualPairs:[{fromEventId,toEventId}]`（事件 id 取各版快照 `eventId`；仅本次对照生效，不落库）
+    - 200：`{code:"VERSION_COMPARISON", fromVersion, toVersion, pairing:{autoPairCount, manualPairCount, pairs:[{fromEventId,toEventId,identity,kind}]}, summary, pairedEvents, unpairedFrom, unpairedTo, relations:{added,removed,changed,unchanged,unpaired}}`
+      - `pairedEvents[].{pairKind:"identity"|"manual", identity, from, to, changedFields}`，其中 `from/to` 为 `{versionNo,eventId,identity,title,description,claim:{claimId,precision,dateLabel,intervalStart,intervalEnd,source,claimNote,resolvedDate}}`
+      - `relations.changed[]` 为 `{from,to,fields:["source"|"note"]}`；`added/removed/unchanged[].from|to` 为关系视图（含 `relationId`、两端 `eventId/title`、`source`、`note`）；`unpaired[]` 为 `{side:"from"|"to", reason:"endpoint_unpaired", relation, unpairedEventId}`
+    - 400：`{code:"PAIR_INVALID", message, invalidPairs:[{index,fromEventId,toEventId,reason}]}`，`reason` 取值：`invalid_pair_format | from_event_not_found | to_event_not_found | duplicate_pair | duplicate_from_event | duplicate_to_event | conflicts_with_identity_pairing`
+    - 404：`{code:"VERSION_NOT_FOUND", message, versionNos}`（from / to 任一版本不存在）
+- 所有草稿增删改接口（含恢复确认）都会推进 `GET /api/editor/state` 返回的 `draftRevision`；预览、发布、改选建议与两版对照不推进。
 
 ## 改选建议 HTTP 调用示例
 
@@ -209,10 +227,49 @@ curl -s -X POST "$BASE/api/editor/suggest-reselection" \
 
 建议只描述「把哪些事件改选到哪条现有主张」即可解，不代替发布：确认采纳后用建议的 `selection` 重新调用 `/api/editor/validate` 与 `/api/editor/publish`（仍须遵守 `baseVersionNo` 冲突约定）。
 
-## 本轮变动（改选建议）
+## 两版对照 HTTP 调用示例
 
-- 新增只读接口 `POST /api/editor/suggest-reselection` 与求解模块 `src/suggest.js`（分支限界：最少改选事件数，平手按事件 ID 排序的主张 ID 全序列取字典序最小，求解日期由既有 `solver.js` 复核产出）。
-- `POST /api/editor/validate` 响应新增 `draftRevision` 字段（其余结构不变）。
-- 编辑台预检出现「时间无解」时可一键查看 / 应用改选建议（应用只写本机浏览器选择）。
-- 新增测试：`test/suggest.test.js`（HTTP 全分支）、`test/suggest-search.test.js`（最优性与平手规则）。
-- 启动方式、既有接口与数据结构均无破坏性变化，旧库可直接启动。
+编辑台右下「两版对照」已内置图形流程。直接调用只读 API（事件 id 取各版快照 JSON 中的 `eventId`）：
+
+```bash
+TOKEN=editor            # 与 EDITOR_TOKEN 一致
+BASE=http://localhost:3000
+
+# 1) 仅按跨版本身份自动配对（同一草稿 id，或从已发布版恢复草稿后再发布、身份延续的事件）
+curl -s -X POST "$BASE/api/editor/compare-versions" \
+  -H "Content-Type: application/json" -H "X-Editor-Token: $TOKEN" \
+  -d '{"fromVersionNo":1,"toVersionNo":2}'
+# -> {"ok":true,"code":"VERSION_COMPARISON",
+#     "pairing":{"autoPairCount":2,"manualPairCount":0,"pairs":[{"fromEventId":1,"toEventId":4,"identity":"e1","kind":"identity"}, ...]},
+#     "summary":{"eventPairs":2,"pairedChangedEvents":1,"unpairedFromCount":1,"unpairedToCount":1,
+#                "addedRelations":1,"removedRelations":0,"changedRelations":1,"unchangedRelations":1,"unpairedRelations":0},
+#     "pairedEvents":[{"pairKind":"identity","from":{"eventId":1,"title":"动员会",...},
+#                       "to":{"eventId":4,"title":"动员会（改名）",...},
+#                       "changedFields":["title","source","resolvedDate"]}],
+#     "unpairedFrom":[...],"unpairedTo":[...],
+#     "relations":{"added":[...],"removed":[...],"changed":[{"from":{...},"to":{...},"fields":["source"]}],
+#                  "unchanged":[...],"unpaired":[]}}
+
+# 2) 身份无法证明的事件：由编辑者显式指定一对一人工配对（不按标题相似度猜测）
+curl -s -X POST "$BASE/api/editor/compare-versions" \
+  -H "Content-Type: application/json" -H "X-Editor-Token: $TOKEN" \
+  -d '{"fromVersionNo":1,"toVersionNo":2,
+       "manualPairs":[{"fromEventId":2,"toEventId":7}]}'
+
+# 非法人工配对（重复 / 跨版不存在 / 占用已有确定配对）→ 400，逐项 reason
+# {"code":"PAIR_INVALID","invalidPairs":[{"index":0,"fromEventId":2,"toEventId":7,
+#   "reason":"duplicate_from_event"}]}
+
+# 未知版本 → 404
+# {"code":"VERSION_NOT_FOUND","message":"版本 9 不存在","versionNos":[9]}
+```
+
+对照不写任何数据，可安全重复调用；`manualPairs` 不会被保存，每次请求都需显式带上。
+
+## 本轮变动（两版对照）
+
+- 新增只读接口 `POST /api/editor/compare-versions` 与对照模块 `src/compare.js`：跨版本事件身份自动配对（同一草稿 id；**从已发布版恢复草稿后再次发布的事件即使数据库换了新 id 也延续身份**）、编辑者一对一人工配对（重复 / 跨版不存在 / 与确定配对冲突全部拒绝，不按标题猜测）、事件逐项前后值（标题 / 描述 / 主张精度 / 区间 / 出处 / 考异 / 求解日期）、关系新增 / 移除 / 出处备注修改（同端点多条无法唯一对应时只列增删），未知版本 404。
+- 事件新增跨版本稳定身份：草稿表 `events.identity`（触发器默认 `e<id>`）、快照表 `version_events.identity`（发布时复制、恢复时继承）；**旧库启动自动补列并回填**（历史快照回退 `e<event_id>`），旧库可直接启动。
+- 编辑台右下新增「两版对照」卡片与对照对话框（自动配对、逐项高亮、人工配对、关系增删改分组）。
+- 新增测试：`test/compare.test.js`（身份配对 / 恢复后身份延续 / 未配对不猜测 / 人工配对全分支 / 事件逐项差异 / 关系增删改与同端点多条 / 未配对端点关系 / 只读性 / 404 / 既有响应兼容，共 16 项）。
+- 对照为纯只读，不推进草稿修订号；既有接口与公开快照 JSON 字段、启动方式均无破坏性变化。

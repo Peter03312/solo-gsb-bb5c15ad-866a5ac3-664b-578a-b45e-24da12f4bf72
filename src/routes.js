@@ -13,6 +13,7 @@ const {
 } = require('./draft');
 const { previewRestore, confirmRestore } = require('./restore');
 const { suggestReselection } = require('./suggest');
+const { compareVersions } = require('./compare');
 
 const router = express.Router();
 
@@ -308,6 +309,19 @@ router.post('/api/editor/restore/confirm', (req, res) => {
   const expectedLatestVersionNo = requireNonNegativeInt(body, 'expectedLatestVersionNo');
   const result = confirmRestore({ versionNo, draftRevision, expectedLatestVersionNo });
   res.json(result);
+});
+
+// ---- 两个已发布版本只读对照（不写草稿 / 不碰快照 / 不推进修订号）----
+// 体含 fromVersionNo、toVersionNo，可选 manualPairs:[{fromEventId,toEventId}]
+// （from 为“前”、to 为“后”；事件 id 取各版快照 event_id）。
+// 未知版本 → 404 VERSION_NOT_FOUND；人工配对非法 → 400 PAIR_INVALID（逐项 reason）。
+router.post('/api/editor/compare-versions', (req, res) => {
+  const body = req.body || {};
+  const fromVersionNo = requirePositiveInt(body, 'fromVersionNo');
+  const toVersionNo = requirePositiveInt(body, 'toVersionNo');
+  const manualPairs = body.manualPairs === undefined ? [] : body.manualPairs;
+  if (!Array.isArray(manualPairs)) throw badRequest('manualPairs 必须是 [{fromEventId, toEventId}] 数组');
+  res.json(compareVersions({ fromVersionNo, toVersionNo, manualPairs }));
 });
 
 module.exports = router;
